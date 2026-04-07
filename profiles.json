@@ -1,0 +1,24 @@
+{
+  "minimal": {
+    "beads@beads-marketplace": true,
+    "code-review@claude-code-plugins": false,
+    "code-review@claude-plugins-official": false,
+    "code-simplifier@claude-plugins-official": false,
+    "compound-engineering@compound-engineering-plugin": false,
+    "context7@claude-plugins-official": true,
+    "csharp-lsp@claude-plugins-official": false,
+    "explanatory-output-style@claude-code-plugins": false,
+    "explanatory-output-style@claude-plugins-official": false,
+    "feature-dev@claude-code-plugins": false,
+    "feature-dev@claude-plugins-official": false,
+    "flowforge-skills@flowforge-marketplace": false,
+    "learning-output-style@claude-code-plugins": false,
+    "mindcontext-core@mindcontext-core": true,
+    "mindcontext-skills@mindcontext-marketplace": false,
+    "security-guidance@claude-code-plugins": false,
+    "serena@claude-plugins-official": false,
+    "superpowers@claude-plugins-official": false,
+    "superpowers@superpowers-dev": false,
+    "worktrunk@worktrunk": false
+  }
+}
