@@ -221,15 +221,30 @@ def scan_plugin_agents(plugin_key: str) -> list[dict]:
 def _classify_user_skill(d: Path) -> str:
     """Classify a user-level skill into a group based on symlink target.
 
-    Uses path-segment matching (e.g. '/gstack/' not just 'gstack') to avoid
-    false matches like '/my-gstack-fork/'.
+    Checks both the directory itself and its SKILL.md for symlink targets.
+    Some setups use dir-level symlinks (browse → gstack/browse/), others
+    use file-level symlinks (browse/SKILL.md → gstack/browse/SKILL.md).
+    Uses path-segment matching (e.g. '/gstack/' not just 'gstack').
     """
-    if not d.is_symlink():
+    # Check directory symlink first
+    target = None
+    if d.is_symlink():
+        try:
+            target = str(d.resolve())
+        except OSError:
+            return "user:standalone"
+    else:
+        # Check if SKILL.md inside is a symlink (file-level symlink pattern)
+        skill_md = d / "SKILL.md"
+        if skill_md.is_symlink():
+            try:
+                target = str(skill_md.resolve())
+            except OSError:
+                pass
+
+    if not target:
         return "user:standalone"
-    try:
-        target = str(d.resolve())
-    except OSError:
-        return "user:standalone"  # broken symlink
+
     if "/gstack/" in target:
         return "user:gstack"
     if "/dotfiles/" in target:
