@@ -1,6 +1,6 @@
 ---
-name: plugin-manager
-description: Manage Claude Code plugins, skills, and agents. Use when the user asks about plugin list, toggle, status, skills, agents, audit, profile, or wants to optimize their plugin setup for the current project.
+name: mctx-budget
+description: Context budget X-ray for Claude Code. Audit plugins, skills, rules, memory, and token costs. Use when asked about token optimization, context budget, plugin management, or "what's eating my tokens".
 ---
 
 Always run with `--format json` and render results as markdown tables.
@@ -10,7 +10,7 @@ Always run with `--format json` and render results as markdown tables.
 ### list — Show installed plugins
 
 ```bash
-python3 {baseDir}/scripts/plugin_manager.py --format json list
+python3 {baseDir}/scripts/mctx_budget.py --format json list
 ```
 
 Render as:
@@ -28,7 +28,7 @@ Render as:
 ### status — Detailed state per scope
 
 ```bash
-python3 {baseDir}/scripts/plugin_manager.py --format json status
+python3 {baseDir}/scripts/mctx_budget.py --format json status
 ```
 
 | # | Plugin | Global | Project | Local | Effective | Source |
@@ -37,7 +37,7 @@ python3 {baseDir}/scripts/plugin_manager.py --format json status
 ### skills — List active skills
 
 ```bash
-python3 {baseDir}/scripts/plugin_manager.py --format json skills
+python3 {baseDir}/scripts/mctx_budget.py --format json skills
 ```
 
 | Source | Skill | Description |
@@ -45,7 +45,7 @@ python3 {baseDir}/scripts/plugin_manager.py --format json skills
 ### agents — List active agents
 
 ```bash
-python3 {baseDir}/scripts/plugin_manager.py --format json agents
+python3 {baseDir}/scripts/mctx_budget.py --format json agents
 ```
 
 | Source | Agent |
@@ -53,7 +53,7 @@ python3 {baseDir}/scripts/plugin_manager.py --format json agents
 ### audit — Project-aware recommendations
 
 ```bash
-python3 {baseDir}/scripts/plugin_manager.py --format json audit
+python3 {baseDir}/scripts/mctx_budget.py --format json audit
 ```
 
 Full context audit across all layers. Reports:
@@ -85,7 +85,7 @@ After audit, guide user to `toggle` or `extract` to optimize.
 ### extract — Copy a plugin skill locally
 
 ```bash
-python3 {baseDir}/scripts/plugin_manager.py --format json extract <plugin> <skill> [--dest <name>]
+python3 {baseDir}/scripts/mctx_budget.py --format json extract <plugin> <skill> [--dest <name>]
 ```
 
 Copies a skill from a plugin's cache to `.claude/skills/` so it works standalone without the plugin enabled.
@@ -100,7 +100,7 @@ Typical workflow:
 ### remove — Remove a locally extracted skill
 
 ```bash
-python3 {baseDir}/scripts/plugin_manager.py --format json remove <skill>
+python3 {baseDir}/scripts/mctx_budget.py --format json remove <skill>
 ```
 
 Only removes from project `.claude/skills/`, never from plugin cache.
@@ -108,9 +108,9 @@ Only removes from project `.claude/skills/`, never from plugin cache.
 ### profile save/load/list — Profile management
 
 ```bash
-python3 {baseDir}/scripts/plugin_manager.py --format json profile save <name>
-python3 {baseDir}/scripts/plugin_manager.py --format json profile load <name> --scope <scope>
-python3 {baseDir}/scripts/plugin_manager.py --format json profile list
+python3 {baseDir}/scripts/mctx_budget.py --format json profile save <name>
+python3 {baseDir}/scripts/mctx_budget.py --format json profile load <name> --scope <scope>
+python3 {baseDir}/scripts/mctx_budget.py --format json profile list
 ```
 
 ## Response style

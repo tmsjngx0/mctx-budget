@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Claude Code Plugin Manager CLI.
+"""mctx-budget: Context budget X-ray for Claude Code.
 
-Reads installed plugins from ~/.claude/plugins/installed_plugins.json
-and manages enable/disable state across global, project, and local settings.
+Audits plugins, skills, rules, memory, and token costs.
+Manages enable/disable state across global, project, and local settings.
 
-Commands: list, toggle, status, skills, agents, audit, extract, profile
+Commands: list, toggle, status, skills, agents, audit, extract, remove, profile
 Supports --format json for machine-readable output (used by SKILL.md).
 """
 
@@ -110,7 +110,7 @@ def get_effective_state(plugins: list[str]) -> dict[str, bool]:
         elif key in global_state:
             effective[key] = global_state[key]
         else:
-            effective[key] = False
+            effective[key] = True  # installed plugins default to enabled
     return effective
 
 
@@ -219,17 +219,24 @@ def scan_plugin_agents(plugin_key: str) -> list[dict]:
 
 
 def _classify_user_skill(d: Path) -> str:
-    """Classify a user-level skill into a group based on symlink target."""
+    """Classify a user-level skill into a group based on symlink target.
+
+    Uses path-segment matching (e.g. '/gstack/' not just 'gstack') to avoid
+    false matches like '/my-gstack-fork/'.
+    """
     if not d.is_symlink():
         return "user:standalone"
-    target = str(d.resolve())
-    if "gstack" in target:
+    try:
+        target = str(d.resolve())
+    except OSError:
+        return "user:standalone"  # broken symlink
+    if "/gstack/" in target:
         return "user:gstack"
-    if "dotfiles" in target:
+    if "/dotfiles/" in target:
         return "user:dotfiles"
-    if ".agents" in target:
+    if "/agents/" in target or "/.agents/" in target:
         return "user:agents"
-    return "user:other"
+    return "user:standalone"
 
 
 def _measure_skill_dir(d: Path) -> int:
@@ -421,9 +428,7 @@ def _walk_limited(root: Path, max_depth: int) -> list[Path]:
             return
         try:
             for child in p.iterdir():
-                if child.name.startswith(".") and child.name in skip:
-                    continue
-                if child.name in skip:
+                if child.name.startswith(".") or child.name in skip:
                     continue
                 if child.is_file():
                     results.append(child)
@@ -717,9 +722,20 @@ def cmd_agents(_args: argparse.Namespace) -> None:
     print()
 
 
-def _measure_rules() -> list[dict]:
-    """Measure all rules and CLAUDE.md files loaded into context."""
-    results = []
+def _measure_context() -> dict:
+    """Measure all structural context loaded into a Claude Code session.
+
+    Returns a structured dict with separate categories for the X-ray view:
+    {
+        "rules": [...],      # .claude/rules/ files
+        "claude_md": [...],  # CLAUDE.md chain
+        "memory": [...],     # auto-memory files
+        "excludes": set(),   # claudeMdExcludes from all settings
+    }
+    """
+    rules = []
+    claude_md = []
+    memory = []
 
     # Read claudeMdExcludes from all settings
     excludes: set[str] = set()
@@ -735,7 +751,7 @@ def _measure_rules() -> list[dict]:
             if f.is_file() and f.suffix == ".md":
                 excluded = f"~/.claude/rules/{f.name}" in excludes
                 size = f.stat().st_size
-                results.append({
+                rules.append({
                     "file": f.name,
                     "level": "global",
                     "path": f"~/.claude/rules/{f.name}",
@@ -750,7 +766,7 @@ def _measure_rules() -> list[dict]:
             if f.is_file() and f.suffix == ".md":
                 excluded = f".claude/rules/{f.name}" in excludes
                 size = f.stat().st_size
-                results.append({
+                rules.append({
                     "file": f.name,
                     "level": "project",
                     "path": f".claude/rules/{f.name}",
@@ -758,32 +774,59 @@ def _measure_rules() -> list[dict]:
                     "excluded": excluded,
                 })
 
-    # CLAUDE.md files
+    # CLAUDE.md chain
     for p, level in [(HOME / ".claude/CLAUDE.md", "global"), (Path("CLAUDE.md"), "project")]:
         if p.exists():
-            results.append({
+            claude_md.append({
                 "file": p.name,
                 "level": level,
                 "path": str(p),
                 "size_bytes": p.stat().st_size,
-                "excluded": False,
             })
+
+    # AGENTS.md
+    agents_md = Path("AGENTS.md")
+    if agents_md.exists():
+        claude_md.append({
+            "file": "AGENTS.md",
+            "level": "project",
+            "path": "AGENTS.md",
+            "size_bytes": agents_md.stat().st_size,
+        })
 
     # Memory
     memory_dir = HOME / ".claude" / "projects"
     if memory_dir.is_dir():
-        # Find MEMORY.md in project memory
         cwd_key = str(Path.cwd()).replace("/", "-").lstrip("-")
-        mem_path = memory_dir / cwd_key / "memory" / "MEMORY.md"
-        if mem_path.exists():
-            results.append({
-                "file": "MEMORY.md",
-                "level": "memory",
-                "path": "auto-memory",
-                "size_bytes": mem_path.stat().st_size,
-                "excluded": False,
-            })
+        mem_dir = memory_dir / cwd_key / "memory"
+        if mem_dir.is_dir():
+            for f in sorted(mem_dir.iterdir()):
+                if f.is_file() and f.suffix == ".md":
+                    memory.append({
+                        "file": f.name,
+                        "level": "memory",
+                        "path": "auto-memory",
+                        "size_bytes": f.stat().st_size,
+                    })
 
+    return {
+        "rules": rules,
+        "claude_md": claude_md,
+        "memory": memory,
+        "excludes": excludes,
+    }
+
+
+def _measure_rules() -> list[dict]:
+    """Legacy wrapper: returns flat list for backward compat with audit command."""
+    ctx = _measure_context()
+    results = []
+    for r in ctx["rules"]:
+        results.append(r)
+    for c in ctx["claude_md"]:
+        results.append({**c, "excluded": False})
+    for m in ctx["memory"]:
+        results.append({**m, "excluded": False})
     return results
 
 
@@ -1071,7 +1114,7 @@ def main() -> None:
     global _json_mode
 
     parser = argparse.ArgumentParser(
-        description="Claude Code Plugin Manager",
+        description="mctx-budget: Context budget X-ray for Claude Code",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--format", choices=["text", "json"], default="text")
