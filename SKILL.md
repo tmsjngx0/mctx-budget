@@ -50,6 +50,25 @@ python3 {baseDir}/scripts/mctx_budget.py --format json agents
 
 | Source | Agent |
 
+### context — Full context budget X-ray
+
+```bash
+python3 {baseDir}/scripts/mctx_budget.py --format json context [--top N]
+```
+
+Shows everything eating the token budget, split into two categories:
+
+**Always loaded** (every message): CLAUDE.md chain, active rules, memory, hooks, MCP servers
+**On-invoke** (loaded when a skill is called): skills grouped by source with sizes
+
+Render the JSON as:
+
+1. **Always loaded** table: category | count | size | ~tokens
+2. **On-invoke** table: source | count | size | ~tokens
+3. **Top N budget eaters**: skill name | size | ~tokens
+
+After showing, guide user to `rules exclude` or `toggle` to reduce budget.
+
 ### audit — Project-aware recommendations
 
 ```bash

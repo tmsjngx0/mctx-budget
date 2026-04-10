@@ -722,6 +722,68 @@ def cmd_agents(_args: argparse.Namespace) -> None:
     print()
 
 
+def _estimate_tokens(size_bytes: int, path: Path | None = None) -> int:
+    """Estimate token count from byte size.
+
+    Uses ~4 chars/token for ASCII, ~2 chars/token for CJK/non-ASCII.
+    If path is provided, samples the file to detect CJK ratio.
+    """
+    if path and path.exists():
+        try:
+            sample = path.read_text(encoding="utf-8", errors="replace")[:2000]
+            if sample:
+                non_ascii = sum(1 for c in sample if ord(c) > 127)
+                ratio = non_ascii / len(sample)
+                # Blend: CJK-heavy content tokenizes at ~2 chars/tok
+                chars_per_token = 4.0 - (ratio * 2.0)  # 4.0 for pure ASCII, 2.0 for pure CJK
+                return max(1, int(size_bytes / chars_per_token))
+        except OSError:
+            pass
+    return max(1, size_bytes // 4)
+
+
+def _measure_hooks() -> list[dict]:
+    """Read hooks from .claude/hooks.json and ~/.claude/hooks.json."""
+    hooks = []
+    for path, level in [
+        (Path(".claude/hooks.json"), "project"),
+        (HOME / ".claude" / "hooks.json", "global"),
+    ]:
+        data = read_json(path)
+        if data:
+            for event, entries in data.items():
+                if isinstance(entries, list):
+                    for entry in entries:
+                        hooks.append({
+                            "event": event,
+                            "matcher": entry.get("matcher", ""),
+                            "command": entry.get("command", "")[:80],
+                            "level": level,
+                        })
+    return hooks
+
+
+def _measure_mcp_servers() -> list[dict]:
+    """Read MCP server configs from settings files."""
+    servers = []
+    seen = set()
+    for path in [LOCAL_SETTINGS, PROJECT_SETTINGS, GLOBAL_SETTINGS]:
+        data = read_json(path)
+        for name, config in data.get("mcpServers", {}).items():
+            if name not in seen:
+                seen.add(name)
+                servers.append({
+                    "name": name,
+                    "command": config.get("command", ""),
+                    "level": {
+                        LOCAL_SETTINGS: "local",
+                        PROJECT_SETTINGS: "project",
+                        GLOBAL_SETTINGS: "global",
+                    }.get(path, "unknown"),
+                })
+    return servers
+
+
 def _measure_context() -> dict:
     """Measure all structural context loaded into a Claude Code session.
 
@@ -1106,6 +1168,144 @@ def cmd_remove_skill(args: argparse.Namespace) -> None:
         print(f"{GREEN}Removed{RESET} {dest} ({total_size // 1024}K)")
 
 
+def cmd_context(args: argparse.Namespace) -> None:
+    """Context X-ray: full structural breakdown of token budget."""
+    ctx = _measure_context()
+    hooks = _measure_hooks()
+    mcp_servers = _measure_mcp_servers()
+    top_n = int(args.top) if hasattr(args, "top") and args.top else 5
+
+    # Skills grouped by source (reuse existing scan logic)
+    plugins = get_installed_plugins()
+    effective = get_effective_state(plugins)
+    skill_groups: dict[str, dict] = {}
+
+    for key in plugins:
+        if not effective.get(key, False):
+            continue
+        plugin_name = key.split("@")[0]
+        install_path = get_plugin_install_path(key)
+        for s in scan_plugin_skills(key):
+            src = f"plugin:{plugin_name}"
+            g = skill_groups.setdefault(src, {"count": 0, "total_bytes": 0, "skills": []})
+            g["count"] += 1
+            size = 0
+            if install_path:
+                skill_dir = install_path / "skills" / s["dir"]
+                size = _measure_skill_dir(skill_dir)
+            g["total_bytes"] += size
+            g["skills"].append({"name": s["skill"], "size_bytes": size})
+
+    for s in scan_local_skills():
+        src = s.get("source", "unknown")
+        g = skill_groups.setdefault(src, {"count": 0, "total_bytes": 0, "skills": []})
+        g["count"] += 1
+        size = s.get("size_bytes", 0)
+        g["total_bytes"] += size
+        g["skills"].append({"name": s["skill"], "size_bytes": size})
+
+    # Always-loaded totals
+    rules_active = [r for r in ctx["rules"] if not r["excluded"]]
+    rules_excluded = [r for r in ctx["rules"] if r["excluded"]]
+    active_rules_bytes = sum(r["size_bytes"] for r in rules_active)
+    excluded_rules_bytes = sum(r["size_bytes"] for r in rules_excluded)
+    claude_md_bytes = sum(c["size_bytes"] for c in ctx["claude_md"])
+    memory_bytes = sum(m["size_bytes"] for m in ctx["memory"])
+    structural_bytes = active_rules_bytes + claude_md_bytes + memory_bytes
+
+    # Top budget eaters across all skills
+    all_skills_flat = []
+    for src, g in skill_groups.items():
+        for s in g["skills"]:
+            if s["size_bytes"] > 0:
+                all_skills_flat.append({
+                    "source": src,
+                    "name": s["name"],
+                    "size_bytes": s["size_bytes"],
+                    "tokens": _estimate_tokens(s["size_bytes"]),
+                })
+    all_skills_flat.sort(key=lambda x: x["size_bytes"], reverse=True)
+
+    if _json_mode:
+        emit({
+            "command": "context",
+            "always_loaded": {
+                "claude_md": {
+                    "files": ctx["claude_md"],
+                    "count": len(ctx["claude_md"]),
+                    "total_bytes": claude_md_bytes,
+                    "tokens": _estimate_tokens(claude_md_bytes),
+                },
+                "rules_active": {
+                    "files": rules_active,
+                    "count": len(rules_active),
+                    "total_bytes": active_rules_bytes,
+                    "tokens": _estimate_tokens(active_rules_bytes),
+                },
+                "rules_excluded": {
+                    "files": rules_excluded,
+                    "count": len(rules_excluded),
+                    "total_bytes": excluded_rules_bytes,
+                },
+                "memory": {
+                    "files": ctx["memory"],
+                    "count": len(ctx["memory"]),
+                    "total_bytes": memory_bytes,
+                    "tokens": _estimate_tokens(memory_bytes),
+                },
+                "hooks": {
+                    "entries": hooks,
+                    "count": len(hooks),
+                },
+                "mcp_servers": {
+                    "servers": mcp_servers,
+                    "count": len(mcp_servers),
+                },
+                "total_bytes": structural_bytes,
+                "total_tokens": _estimate_tokens(structural_bytes),
+            },
+            "on_invoke": {
+                "groups": {
+                    src: {
+                        "count": g["count"],
+                        "total_bytes": g["total_bytes"],
+                        "tokens": _estimate_tokens(g["total_bytes"]),
+                    }
+                    for src, g in sorted(skill_groups.items())
+                },
+            },
+            "top_budget_eaters": all_skills_flat[:top_n],
+        })
+        return
+
+    # Text output
+    project_name = Path.cwd().name
+    print(f"\n{BOLD}Context X-ray for: {project_name}{RESET}")
+    print("=" * 50)
+
+    print(f"\n{BOLD}Always loaded (every message):{RESET}")
+    print(f"  CLAUDE.md chain      {len(ctx['claude_md']):>3} files  {claude_md_bytes / 1024:>7.1f}KB  ~{_estimate_tokens(claude_md_bytes):,} tok")
+    print(f"  Rules (active)       {len(rules_active):>3} files  {active_rules_bytes / 1024:>7.1f}KB  ~{_estimate_tokens(active_rules_bytes):,} tok")
+    print(f"  Rules (excluded)     {len(rules_excluded):>3} files  {excluded_rules_bytes / 1024:>7.1f}KB     saved")
+    print(f"  Memory               {len(ctx['memory']):>3} files  {memory_bytes / 1024:>7.1f}KB  ~{_estimate_tokens(memory_bytes):,} tok")
+    print(f"  Hooks                {len(hooks):>3} entries")
+    print(f"  MCP servers          {len(mcp_servers):>3} configured")
+    print(f"  {'─' * 48}")
+    print(f"  TOTAL STRUCTURAL             {structural_bytes / 1024:>7.1f}KB  ~{_estimate_tokens(structural_bytes):,} tok")
+
+    print(f"\n{BOLD}On-invoke (loaded when skill is called):{RESET}")
+    for src, g in sorted(skill_groups.items(), key=lambda x: x[1]["total_bytes"], reverse=True):
+        tok = _estimate_tokens(g["total_bytes"])
+        size_str = f"{g['total_bytes'] / 1024:.0f}KB" if g["total_bytes"] < 1024 * 1024 else f"{g['total_bytes'] / (1024 * 1024):.1f}MB"
+        print(f"  {src:<30} {g['count']:>3} skills  {size_str:>8}  ~{tok:,} tok")
+
+    if all_skills_flat:
+        print(f"\n{BOLD}Top {top_n} budget eaters:{RESET}")
+        for i, s in enumerate(all_skills_flat[:top_n], 1):
+            print(f"  {i}. {s['source']}/{s['name']:<30} {s['size_bytes'] / 1024:>6.0f}KB  ~{s['tokens']:,} tok")
+    print()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1130,6 +1330,9 @@ def main() -> None:
     sub.add_parser("skills", help="List active skills")
     sub.add_parser("agents", help="List active agents")
     sub.add_parser("audit", help="Project context recommendations")
+
+    p_context = sub.add_parser("context", help="Context budget X-ray")
+    p_context.add_argument("--top", default="5", help="Number of top budget eaters to show")
 
     p_extract = sub.add_parser("extract", help="Extract a skill from a plugin locally")
     p_extract.add_argument("plugin_key", help="Plugin key or partial name (e.g. compound-engineering)")
@@ -1160,6 +1363,7 @@ def main() -> None:
         "audit": cmd_audit,
         "extract": cmd_extract,
         "remove": cmd_remove_skill,
+        "context": cmd_context,
     }
 
     if args.command in commands:
